@@ -60,6 +60,18 @@ def main():
                 st.rerun()
 
 
+def get_response(params) -> brtd.ConverseResponseTypeDef:
+    with st.spinner("Consulting the AI..."):
+        return get_bedrock_client().converse(**params)
+
+
+def render_response(response) -> None:
+    st.subheader("Response Received!")
+    text_response = "\n\n".join(extract_assistant_text(response))
+    st.code(text_response, wrap_lines=True, language=None)
+    st.download_button("Download Response", text_response, file_name="response.txt")
+
+
 def render_sidebar():
     with st.sidebar:
         st.header(TITLE)
@@ -109,18 +121,6 @@ def inference_dialog(max_max_tokens: int = 8192) -> brtd.InferenceConfigurationT
             inference["maxTokens"] = max_tokens
 
     return inference or None
-
-
-def get_response(params) -> brtd.ConverseResponseTypeDef:
-    with st.spinner("Consulting the AI..."):
-        return get_bedrock_client().converse(**params)
-
-
-def render_response(response) -> None:
-    st.subheader("Response Received!")
-    text_response = "\n\n".join(extract_assistant_text(response))
-    st.code(text_response, wrap_lines=True, language=None)
-    st.download_button("Download Response", text_response, file_name="response.txt")
 
 
 def self_download():
