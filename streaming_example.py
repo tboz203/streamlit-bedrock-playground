@@ -6,15 +6,17 @@ Shows how to use the Converse API to stream a response from Anthropic Claude 3 S
 
 from __future__ import annotations
 
+import json
 import logging
-import boto3
+from collections.abc import Generator
 from typing import TYPE_CHECKING
 
+import boto3
 from botocore.exceptions import ClientError
 
 if TYPE_CHECKING:
-    from mypy_boto3_bedrock_runtime import type_defs as brtd
     from botocore.eventstream import EventStream
+    from mypy_boto3_bedrock_runtime import type_defs as brtd
 
 logger = logging.getLogger("streaming_example")
 logging.basicConfig(
@@ -28,26 +30,29 @@ logging.basicConfig(
 MODEL_ID = "mistral.mistral-small-2402-v1:0"
 
 
-def stream_conversation(stream: EventStream[brtd.ConverseStreamResponseTypeDef]) -> None:
+def stream_conversation(
+    stream: EventStream[brtd.ConverseStreamResponseTypeDef],
+) -> Generator[brtd.ConverseStreamResponseTypeDef]:
     for event in stream:
-        if "messageStart" in event:
-            print(f"\nRole: {event['messageStart']['role']}")
+        match event:
+            case {"messageStart": {"role": role}}:
+                print(f"\nRole: {role}")
+            case {"messageStop": {"stopReason": reason}}:
+                print(f"\nStop reason: {reason}")
 
-        if "contentBlockDelta" in event:
-            print(event["contentBlockDelta"]["delta"]["text"], end="")
+            case {"metadata": metadata}:
+                print("\nMetadata:")
+                if usage := metadata.get("usage"):
+                    print(f"Input tokens: {usage['inputTokens']}")
+                    print(f"Output tokens: {usage['outputTokens']}")
+                    print(f"Total tokens: {usage['totalTokens']}")
+                if metrics := metadata.get("metrics"):
+                    print(f"Latency: {metrics['latencyMs']} milliseconds")
 
-        if "messageStop" in event:
-            print(f"\nStop reason: {event['messageStop']['stopReason']}")
+            case {"contentBlockDelta": {"delta": {"text": text}}}:
+                print(text, end="")
 
-        if "metadata" in event:
-            metadata = event["metadata"]
-            if "usage" in metadata:
-                print("\nToken usage")
-                print(f"Input tokens: {metadata['usage']['inputTokens']}")
-                print(f":Output tokens: {metadata['usage']['outputTokens']}")
-                print(f":Total tokens: {metadata['usage']['totalTokens']}")
-            if "metrics" in event["metadata"]:
-                print(f"Latency: {metadata['metrics']['latencyMs']} milliseconds")
+        yield event
 
 
 def main():
@@ -89,13 +94,14 @@ def main():
             system=system_prompts,
         )
 
-        stream_conversation(response["stream"])
+        events = list(stream_conversation(response["stream"]))
+
+        with open("event-stream.json", "w") as fout:
+            json.dump(events, fout, indent=2)
 
     except ClientError as err:
         message = err.response["Error"]["Message"]
         logger.error("A client error occurred: %s", message)
-        print("A client error occured: " + format(message))
-
     else:
         print(f"Finished streaming messages with model {MODEL_ID}.")
 

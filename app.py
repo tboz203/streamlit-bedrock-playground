@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from io import StringIO, TextIOBase
 from typing import TYPE_CHECKING
 
 import boto3
@@ -12,6 +14,13 @@ import streamlit as st
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_runtime import BedrockRuntimeClient
     from mypy_boto3_bedrock_runtime import type_defs as brtd
+
+logger = logging.getLogger("app")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s.%(msecs)03d %(levelname)8s %(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 TITLE = "Streamlit Bedrock Playground"
 
@@ -33,43 +42,111 @@ def main():
 
     with left, st.container(border=True):
         params = params_dialog()
+        streaming = st.toggle("Stream response")
         submit = st.button("Submit")
 
     with right:
-        response = st.session_state.get("response")
+        if submit and streaming:
+            generate_and_render_streaming_response(params)
+        else:
+            generate_and_render_response(params, submit)
 
-        response_container = st.container()
-        inspect_container = st.container(border=True)
+    # make the (cached) bedrock client after everything else is rendered,
+    # so it is available immediately on subsequent renders
+    get_bedrock_client()
+
+
+def generate_and_render_response(params, submit: bool) -> None:
+    response = st.session_state.get("response")
+
+    response_container = st.container()
+    inspect_container = st.container(border=True)
+
+    if response:
+        with response_container:
+            st.subheader("Response Received!")
+            text_response = "\n\n".join(extract_assistant_text(response))
+            # st.code(text_response, wrap_lines=True, language=None)
+            st.markdown(text_response)
+            st.download_button("Download Response", text_response, file_name="response.txt")
+
+    with inspect_container:
+        st.subheader("Parameters")
+        st.write(params)
 
         if response:
-            with response_container:
-                render_response(response)
+            st.subheader("Response")
+            st.write(response)
 
-        with inspect_container:
-            st.subheader("Parameters")
-            st.write(params)
-
-            if response:
-                st.subheader("Response")
-                st.write(response)
-
-        if submit:
-            with response_container:
-                response = get_response(params)
-                st.session_state.response = response
-                st.rerun()
+    if submit:
+        with response_container.spinner("Consulting the AI..."):
+            response = get_bedrock_client().converse(**params)
+        st.session_state.response = response
+        st.rerun()
 
 
-def get_response(params) -> brtd.ConverseResponseTypeDef:
-    with st.spinner("Consulting the AI..."):
-        return get_bedrock_client().converse(**params)
+def generate_and_render_streaming_response(params) -> None:
+    response_container = st.container()
+    inspect_container = st.container(border=True)
+    collector_stream = StringIO()
+
+    with inspect_container:
+        st.subheader("Parameters")
+        st.write(params)
+
+    with response_container:
+        st.subheader("Awaiting response...")
+        response = get_bedrock_client().converse_stream(**params)
+
+        st.session_state.response = response
+        inspect_container.subheader("Response")
+        inspect_container.write(response)
+
+        stream = stream_wrapper(response["stream"], collector_stream)
+        st.write_stream(stream)
+
+        collector_stream.seek(0)
+        response["stream"] = collector_stream
+
+        text_response = collector_stream.getvalue()
+        st.download_button("Download Response", text_response, file_name="response.txt")
+
+    st.rerun()
 
 
-def render_response(response) -> None:
-    st.subheader("Response Received!")
-    text_response = "\n\n".join(extract_assistant_text(response))
-    st.code(text_response, wrap_lines=True, language=None)
-    st.download_button("Download Response", text_response, file_name="response.txt")
+def stream_wrapper(
+    stream: Iterator[brtd.ConverseStreamResponseTypeDef | str],
+    write_copy: TextIOBase | None = None,
+) -> Generator[str]:
+    for event in stream:
+        match event:
+            case {"contentBlockDelta": {"delta": {"text": text}}} | str(text):
+                if write_copy is not None:
+                    write_copy.write(text)
+                yield text
+
+    if hasattr(stream, "seek") and callable(stream.seek):
+        stream.seek(0)
+
+
+# def stream_event_print_handler(event: brtd.ConverseStreamResponseTypeDef) -> None:
+#     match event:
+#         case {"messageStart": {"role": role}}:
+#             print(f"\nRole: {role}")
+#         case {"messageStop": {"stopReason": reason}}:
+#             print(f"\nStop reason: {reason}")
+
+#         case {"metadata": metadata}:
+#             print("\nMetadata:")
+#             if usage := metadata.get("usage"):
+#                 print(f"Input tokens: {usage['inputTokens']}")
+#                 print(f"Output tokens: {usage['outputTokens']}")
+#                 print(f"Total tokens: {usage['totalTokens']}")
+#             if metrics := metadata.get("metrics"):
+#                 print(f"Latency: {metrics['latencyMs']} milliseconds")
+
+#         case {"contentBlockDelta": {"delta": {"text": text}}}:
+#             print(text, end="")
 
 
 def render_sidebar():
@@ -123,22 +200,16 @@ def inference_dialog(max_max_tokens: int = 8192) -> brtd.InferenceConfigurationT
     return inference or None
 
 
+@st.fragment
 def self_download():
-    with open(__file__, encoding="utf-8") as fin:
-        my_contents = fin.read()
-
     my_name = os.path.basename(__file__)
-    st.download_button("Download This App", my_contents, file_name=my_name)
-
-
-@st.cache_resource
-def get_boto_session() -> boto3.Session:
-    return boto3.Session()
+    with open(__file__) as fin:
+        st.download_button("Download This App", fin, file_name=my_name)
 
 
 @st.cache_resource
 def get_bedrock_client() -> BedrockRuntimeClient:
-    return get_boto_session().client("bedrock-runtime")
+    return boto3.client("bedrock-runtime")
 
 
 def make_user_message(*text_items: str) -> dict:
@@ -146,6 +217,10 @@ def make_user_message(*text_items: str) -> dict:
 
 
 def extract_assistant_text(response: brtd.ConverseResponseTypeDef) -> Generator[str]:
+    if stream := response.get("stream"):
+        yield from stream_wrapper(stream)
+        return
+
     assert (output := response.get("output"))
     assert (message := output.get("message"))
     assert (content := message.get("content"))
