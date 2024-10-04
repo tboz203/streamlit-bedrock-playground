@@ -1,18 +1,26 @@
+[project]
+name = "streamlit_bedrock_playground"
+dynamic = ["version", "description", "authors"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
 [tool.poetry]
-name = "streamlit-bedrock-playground"
+name = "streamlit_bedrock_playground"
 version = "0.1.0"
 description = ""
 authors = ["Tommy Bozeman <tboz203@gmail.com>"]
 
 [tool.poetry.dependencies]
-python = "~=3.10"
 boto3 = "~=1.35"
+python = "~=3.10"
 streamlit = "~=1.39"
 
 [tool.poetry.group.dev.dependencies]
+boto3-stubs = { extras = ["bedrock-runtime", "essential"], version = "~=1.35" }
 ipython = "~=8.27"
-boto3-stubs = {extras = ["bedrock-runtime", "essential"], version = "~=1.35"}
+ruff = "^0.6.8"
 
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[tool.ruff]
+line-length = 119
